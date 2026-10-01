@@ -14,6 +14,102 @@ import time
 from .crypto import decrypt_page
 
 
+def process_identity(pid: int) -> tuple[str, int]:
+    """Check a running selected process without reading its memory.
+
+    Pin the actual image path and Windows creation FILETIME so a recycled PID
+    cannot reuse a previous process's cached database key. This does not detect
+    an account logout while the same KakaoTalk process remains running.
+    """
+    if sys.platform != "win32" or c.sizeof(c.c_void_p) != 8:
+        raise RuntimeError("Live reader requires 64-bit Windows Python")
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD,
+                                                w.LPWSTR, c.POINTER(w.DWORD)]
+    kernel.QueryFullProcessImageNameW.restype = w.BOOL
+    kernel.GetProcessTimes.argtypes = [w.HANDLE, c.POINTER(w.FILETIME),
+                                      c.POINTER(w.FILETIME), c.POINTER(w.FILETIME),
+                                      c.POINTER(w.FILETIME)]
+    kernel.GetProcessTimes.restype = w.BOOL
+    kernel.GetExitCodeProcess.argtypes = [w.HANDLE, c.POINTER(w.DWORD)]
+    kernel.GetExitCodeProcess.restype = w.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        raise OSError("Selected process is unavailable")
+    try:
+        image, length = c.create_unicode_buffer(32768), w.DWORD(32768)
+        if not kernel.QueryFullProcessImageNameW(handle, 0, image, c.byref(length)):
+            raise OSError("Cannot verify process image")
+        if Path(image.value).name.casefold() != "kakaotalk.exe":
+            raise ValueError("Selected PID is not KakaoTalk.exe")
+        created, exited, cpu_kernel, cpu_user = (w.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(handle, c.byref(created), c.byref(exited),
+                                      c.byref(cpu_kernel), c.byref(cpu_user)):
+            raise OSError("Cannot verify process creation time")
+        exit_code = w.DWORD()
+        if not kernel.GetExitCodeProcess(handle, c.byref(exit_code)):
+            raise OSError("Cannot verify process state")
+        if exit_code.value != 259:  # STILL_ACTIVE
+            raise RuntimeError("Selected process has exited")
+        stamp = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        return str(Path(image.value)).casefold(), stamp
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def discover_pids(executable: Path) -> list[int]:
+    """Find running PIDs for an explicitly supplied absolute executable path.
+
+    Process-name matching only selects candidates. The actual image path must
+    match exactly, which excludes a separate sandbox installation. No account,
+    profile or process memory is inspected.
+    """
+    if sys.platform != "win32" or c.sizeof(c.c_void_p) != 8:
+        raise RuntimeError("Live reader requires 64-bit Windows Python")
+    if not executable.is_absolute() or executable.name.casefold() != "kakaotalk.exe":
+        raise ValueError("Set an absolute KakaoTalk.exe path")
+    expected = str(executable.resolve()).casefold()
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+
+    class ProcessEntry(c.Structure):
+        _fields_ = [("dwSize", w.DWORD), ("cntUsage", w.DWORD),
+                    ("th32ProcessID", w.DWORD), ("th32DefaultHeapID", c.c_size_t),
+                    ("th32ModuleID", w.DWORD), ("cntThreads", w.DWORD),
+                    ("th32ParentProcessID", w.DWORD), ("pcPriClassBase", w.LONG),
+                    ("dwFlags", w.DWORD), ("szExeFile", w.WCHAR * 260)]
+
+    kernel.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = w.HANDLE
+    kernel.Process32FirstW.argtypes = [w.HANDLE, c.POINTER(ProcessEntry)]
+    kernel.Process32FirstW.restype = w.BOOL
+    kernel.Process32NextW.argtypes = [w.HANDLE, c.POINTER(ProcessEntry)]
+    kernel.Process32NextW.restype = w.BOOL
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    snapshot = kernel.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot == c.c_void_p(-1).value:
+        raise OSError("Cannot enumerate process candidates")
+    found = []
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = c.sizeof(entry)
+        available = kernel.Process32FirstW(snapshot, c.byref(entry))
+        while available:
+            if entry.szExeFile.casefold() == "kakaotalk.exe":
+                try:
+                    image, _ = process_identity(entry.th32ProcessID)
+                    if image == expected:
+                        found.append(entry.th32ProcessID)
+                except (OSError, RuntimeError, ValueError):
+                    pass
+            available = kernel.Process32NextW(snapshot, c.byref(entry))
+        return sorted(set(found))
+    finally:
+        kernel.CloseHandle(snapshot)
+
+
 def recover_keys(pid: int, page_one: bytes, timeout=25.0) -> tuple[bytes, bytes]:
     if sys.platform != "win32" or c.sizeof(c.c_void_p) != 8:
         raise RuntimeError("Live reader requires 64-bit Windows Python")

@@ -1,7 +1,7 @@
 # Configure only after substituting your installation and local config paths.
 # This example is for a local Codex MCP host; it does not connect a cloud dot.
 [mcp_servers.openkkt]
-command = "C:/path/to/stoom-openkkt/.venv/Scripts/openkkt.exe"
-args = ["--config", "C:/path/to/stoom-openkkt/config.local.json", "serve"]
+command = "C:/path/to/stoom-openkkt/.venv/Scripts/python.exe"
+args = ["-m", "openkkt.cli", "--config", "C:/path/to/config.local.json", "serve", "--live", "--allow-scope-changes"]
 # Add --allow-scope-changes only to let a host handle explicit human scope requests.
-enabled_tools = ["list_categories", "bridge_status", "get_changes", "search_messages"]
+enabled_tools = ["list_categories", "bridge_status", "get_recent_messages", "get_changes", "search_messages", "select_categories"]

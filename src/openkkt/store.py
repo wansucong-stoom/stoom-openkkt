@@ -152,9 +152,11 @@ class Store:
                       FROM selected s LEFT JOIN categories c ON c.id=s.category_id WHERE c.id IS NULL""")],
                     "health": {r[0]: json.loads(r[1]) for r in con.execute("SELECT key,value FROM health")}}
 
-    def query(self, *, after=0, limit=50, text=None, chat_id=None) -> dict:
+    def query(self, *, after=0, limit=50, text=None, chat_id=None, recent=False) -> dict:
         if not isinstance(after, int) or after < 0 or not 1 <= limit <= 200:
             raise ValueError("Invalid cursor or limit (1..200)")
+        if not isinstance(recent, bool) or (recent and text is not None):
+            raise ValueError("Recent-message mode cannot be combined with search")
         with self.connect() as con:
             health = con.execute("SELECT value FROM health WHERE key='category_refresh'").fetchone()
             if not health or not json.loads(health[0]).get("ok"):
@@ -165,6 +167,28 @@ class Store:
             active = self._active(con)
             if chat_id is not None and chat_id not in active:
                 raise ValueError("Room is outside selected categories")
+            # A fresh category listing does not mean its rooms were collected.
+            # Fail the whole requested scope rather than silently presenting a
+            # mixture of fresh, failed and not-yet-collected room snapshots.
+            requested = {chat_id} if chat_id is not None else active
+            for room in requested:
+                row = con.execute("SELECT value FROM health WHERE key=?",
+                                  ("room:" + room,)).fetchone()
+                state = json.loads(row[0]) if row else None
+                if not state or not state.get("ok") or not state.get("at"):
+                    raise ValueError("Requested room collection is unavailable")
+                collected = datetime.fromisoformat(state["at"])
+                if (datetime.now(timezone.utc) - collected).total_seconds() > 300:
+                    raise ValueError("Requested room collection expired; refresh before reading messages")
+            if recent:
+                sql = """SELECT chat_id,id,author_id,sent_at,text,type,deleted FROM messages
+                    WHERE deleted=0 AND type=1"""
+                params = []
+                if chat_id is not None:
+                    sql += " AND chat_id=?"; params.append(chat_id)
+                sql += " ORDER BY sent_at DESC,chat_id,id LIMIT ?"; params.append(limit)
+                return {"messages": [dict(r) for r in con.execute(sql, params)],
+                        "content_semantics": "latest cached text messages in requested scope"}
             if text is not None:
                 if not text or len(text) > 200:
                     raise ValueError("Search text must contain 1..200 characters")

@@ -1,5 +1,5 @@
 {
   "profile": "C:/Users/YOUR_NAME/AppData/Local/Kakao/KakaoTalk/users/YOUR_PROFILE",
   "store": "./data/assistant.sqlite",
-  "pids": [12345]
+  "executable": "C:/Program Files/Kakao/KakaoTalk/KakaoTalk.exe"
 }
