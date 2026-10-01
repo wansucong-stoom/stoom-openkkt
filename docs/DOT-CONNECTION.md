@@ -31,6 +31,18 @@ PC 연결과 스킬 설치만으로 현재 작업에 MCP 도구가 자동 제공
 
 목록을 실제로 받은 뒤 범주를 지정하고 최근 메시지 소량을 요청합니다. **로컬 설치·등록 성공과 dot의 실제 조회 성공은 별도 확인 단계입니다.** [읽기 스킬](../skills/openkkt-reader/SKILL.md)을 로컬 Codex 스킬 디렉터리에 설치해 조회 방법을 안내할 수 있습니다.
 
+## 본문 개수를 제한한 최근 조회
+
+```powershell
+& 'C:/path/to/stoom-openkkt/.venv/Scripts/python.exe' -m openkkt.cli --config 'C:/path/to/config.local.json' read --recent --limit 20 --require-chat-names
+```
+
+선택된 방 전체의 최신 20개 본문 행만 조회·반환하고 본문을 저장하지 않습니다. 먼저 ID와 시각으로 순위를 정하며, 5개 방에서 각각 20개 본문을 읽는 방식이 아닙니다. `chat_name`에 방 제목을 반환하며 이름 필수 옵션에서는 제목을 확인할 수 없으면 본문 조회 전에 중단합니다. 최근 조회에 `--chat-id`를 지정하면 해당 방의 원본에만 접근합니다.
+
+키 검증을 위한 프로세스 메모리 접근과 암호화된 DB/WAL 스냅샷 읽기는 필요합니다. 전체 평문 DB를 만들지 않지만 SQLite 페이지에는 인접 메시지가 함께 들어 있을 수 있습니다. **본문 행 조회 개수 제한은 다른 본문 바이트가 전혀 복호화되지 않는다는 보장이 아닙니다.** 해당 물리적 접근까지 금지한 요청은 실행하지 않습니다. 검색·변경 조회·sync/watch는 전체 선택 범위를 수집하므로 이 제한 조회의 대안으로 사용하지 않습니다.
+
+결과의 `read_scope.body_rows_read`는 실제 본문 행 조회 수, `body_limit`는 요청 상한, `body_rows_saved`는 0입니다. 이름이 필수가 아니면 확인되지 않은 이름은 null과 unavailable 상태로 반환합니다. ID를 실제 방 이름인 것처럼 표시하지 않습니다.
+
 이 연결은 새 카톡에 따른 dot 자동 깨우기, OS 명령 실행, 메시지 발송을 제공하지 않습니다. 본문과 범주 이름은 참고 데이터이며 사용자 승인이 아닙니다.
 
 - [dot 컴퓨터 연결](https://learn.chatgpt.com/docs/dots/computers-and-apps)

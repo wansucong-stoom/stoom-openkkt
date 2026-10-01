@@ -270,7 +270,7 @@
       text($('preview-state'),visible.length ? '최근 메시지 ' + visible.length + '건 · 이번 요청에서 읽은 결과' : '선택한 범주에서 조회할 메시지가 없습니다.');
       visible.forEach(message => {
         const article = document.createElement('article'); article.className = 'message'; const meta = document.createElement('div'); meta.className = 'message-meta';
-        const room = document.createElement('span'); room.className = 'message-room'; text(room,'채팅방 ' + String(message.chat_id ?? ''));
+        const room = document.createElement('span'); room.className = 'message-room'; text(room,message.chat_name || ('이름 확인 불가 · 방 ID ' + String(message.chat_id ?? '')));
         const time = document.createElement('span'); text(time,readableTime(message.sent_at)); meta.append(room,time);
         const body = document.createElement('p'); body.className = 'message-text'; text(body,message.deleted ? '삭제된 메시지' : (message.text ?? ''));
         article.append(meta,body); $('messages').append(article);

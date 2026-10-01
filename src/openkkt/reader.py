@@ -1,7 +1,7 @@
 """On-demand local reader for connected-computer tasks and STDIO MCP hosts."""
 from pathlib import Path
 
-from .source import LiveSource
+from .source import LiveSource, validate_recent_limit
 from .store import Store, now
 
 
@@ -70,5 +70,29 @@ class Reader:
         return self.store.select(names)
 
     def query(self, **kwargs):
+        if kwargs.get("recent"):
+            limit = kwargs.get("limit", 50)
+            validate_recent_limit(limit)
+            if kwargs.get("text") is not None or kwargs.get("after", 0) != 0:
+                raise ValueError("Recent mode cannot be combined with search or cursor")
+            require_names = kwargs.get("require_chat_names", False)
+            if type(require_names) is not bool:
+                raise ValueError("Invalid room name requirement")
+            self.refresh()
+            requested = self.store.active()
+            chat_id = kwargs.get("chat_id")
+            if chat_id is not None:
+                if chat_id not in requested:
+                    raise ValueError("Room is outside selected categories")
+                requested = {chat_id}
+            source = self._source()
+            try:
+                result = source.recent_messages(requested, limit, require_chat_names=require_names)
+                result["confirmed_at_utc"] = now()
+                return result
+            finally:
+                source.close()
+        if kwargs.pop("require_chat_names", False):
+            raise ValueError("Room name requirement is available only in recent mode")
         self.refresh(collect=True)
         return self.store.query(**kwargs)
