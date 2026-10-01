@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+data/
+work/
+config.local.json
+*.db
+*.db-*
+*.sqlite*
+*.edb*
+*.dmp
+*.key
+*.log
+.env*
