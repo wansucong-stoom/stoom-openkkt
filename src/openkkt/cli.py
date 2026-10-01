@@ -10,13 +10,15 @@ from .store import Store, now
 
 def load_config(path: Path) -> dict:
     value = json.loads(path.read_text(encoding="utf-8-sig"))
-    for key in ("profile", "store"):
+    for key in ("profile", "store", "executable"):
+        if key not in value:
+            continue
         target = Path(value[key])
         value[key] = (path.resolve().parent / target).resolve() if not target.is_absolute() else target.resolve()
     if value["store"] == value["profile"] or value["profile"] in value["store"].parents:
         raise ValueError("Bridge store must be outside KakaoTalk's profile")
     pids = value.get("pids", [])
-    if not pids or any(not isinstance(p, int) or p <= 0 for p in pids):
+    if not value.get("executable") and (not pids or any(not isinstance(p, int) or p <= 0 for p in pids)):
         raise ValueError("Set current KakaoTalk PID(s) explicitly in config")
     return value
 
@@ -78,10 +80,40 @@ def main(argv=None):
     search.add_argument("--limit", type=int, default=50)
     server = sub.add_parser("serve")
     server.add_argument("--allow-scope-changes", action="store_true")
+    server.add_argument("--live", action="store_true", help="Refresh source on each read; no separate watcher needed")
+    read = sub.add_parser("read", help="Refresh selected rooms, then query on demand")
+    read.add_argument("--after", type=int, default=0)
+    read.add_argument("--limit", type=int, default=50)
+    read.add_argument("--text")
+    read.add_argument("--chat-id")
+    read.add_argument("--recent", action="store_true")
+    folders = sub.add_parser("folders", help="Refresh and list custom categories on demand")
+    scope = sub.add_parser("scope", help="Refresh metadata and select explicit custom categories")
+    scope.add_argument("names", nargs="*")
+    gui = sub.add_parser("gui", help="Open the local settings GUI")
+    gui.add_argument("--port", type=int, default=0)
+    gui.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.command == "gui":
+            if not 0 <= args.port <= 65535:
+                raise ValueError("Invalid GUI port")
+            from .gui import run
+            run(args.config, args.port, not args.no_browser); return 0
         config = load_config(args.config)
         store = Store(config["store"])
+        if args.command in ("read", "folders", "scope") or (args.command == "serve" and args.live):
+            from .reader import Reader
+            reader = Reader(config, config_path=args.config)
+            if args.command == "folders":
+                output(reader.categories()); return 0
+            if args.command == "scope":
+                output(reader.select(args.names)); return 0
+            if args.command == "read":
+                output(reader.query(after=args.after, limit=args.limit, text=args.text, chat_id=args.chat_id,
+                                    recent=args.recent)); return 0
+            from .mcp_server import serve
+            serve(reader.store, args.allow_scope_changes, False, reader); return 0
         if args.command == "init":
             store.initialize(); output({"initialized": True}); return 0
         if args.command == "serve":
@@ -97,7 +129,14 @@ def main(argv=None):
             output(store.query(after=args.after, limit=args.limit)); return 0
         if args.command == "search":
             output(store.query(text=args.text, limit=args.limit)); return 0
-        source = LiveSource(config["profile"], config["pids"])
+        if config.get("executable"):
+            from .windows import discover_pids
+            pids = discover_pids(config["executable"])
+            if not pids:
+                raise RuntimeError("Configured KakaoTalk is not running")
+        else:
+            pids = config["pids"]
+        source = LiveSource(config["profile"], pids)
         try:
             if args.command == "categories":
                 store.refresh_categories(source.categories()); output(store.categories()); return 0

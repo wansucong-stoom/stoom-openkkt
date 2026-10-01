@@ -110,6 +110,10 @@ class StoreTests(unittest.TestCase):
                            dict(id="other", name="기타", chat_ids=["12", "13"])]
         self.store.refresh_categories(self.categories)
         self.store.select(["업무"])
+        # These tests start with an observed empty snapshot in both rooms.
+        # Missing, failed and expired collection are tested separately.
+        self.store.ingest("11", [], {})
+        self.store.ingest("12", [], {})
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -127,6 +131,9 @@ class StoreTests(unittest.TestCase):
         for room in ("11", "12"):
             self.store.ingest(room, [message()], {})
         self.store.select(["기타"])
+        with self.assertRaises(ValueError):
+            self.store.query()  # The newly selected room has not been observed.
+        self.store.ingest("13", [], {})
         self.assertEqual({r["chat_id"] for r in self.store.query()["changes"]}, {"12"})
         with self.assertRaises(ValueError):
             self.store.ingest("11", [message()], {})
@@ -169,10 +176,10 @@ class StoreTests(unittest.TestCase):
             self.store.query()
 
     def test_intake_no_history_replay_no_duplicates_no_reply_loop(self):
-        binding = dict(chat_id="99", author_id="100", name="Elisa")
-        self.assertEqual(self.store.intake_commands(binding, [message(text="Elisa 오래된 요청")], 1000), 0)
-        rows = [message(), message("2", "Elisa 업무 요약해줘"),
-                message("3", "[Elisa] 요약했습니다"), message("4", "Elisa 잘못된 발신자", author_id="200")]
+        binding = dict(chat_id="99", author_id="100", name="Assistant")
+        self.assertEqual(self.store.intake_commands(binding, [message(text="Assistant 오래된 요청")], 1000), 0)
+        rows = [message(), message("2", "Assistant 업무 요약해줘"),
+                message("3", "[Assistant] 요약했습니다"), message("4", "Assistant 잘못된 발신자", author_id="200")]
         self.assertEqual(self.store.intake_commands(binding, rows, 1000), 1)
         self.assertEqual(self.store.intake_commands(binding, rows, 1000), 0)
         self.assertEqual(len(self.store.pending_commands()), 1)
@@ -215,11 +222,11 @@ class SourceAndCommandTests(unittest.TestCase):
 
     def test_command_origin_and_age(self):
         binding = dict(chat_id="99", author_id="100")
-        row = message(text='"Elisa" 컴퓨터 꺼줘')
+        row = message(text='"Assistant" 컴퓨터 꺼줘')
         self.assertEqual(parse_command("99", row, binding, 1000), "컴퓨터 꺼줘")
         self.assertIsNone(parse_command("11", row, binding, 1000))
         self.assertIsNone(parse_command("99", row, binding, 1400))
-        self.assertIsNone(parse_command("99", message(text="[Elisa] 네"), binding, 1000))
+        self.assertIsNone(parse_command("99", message(text="[Assistant] 네"), binding, 1000))
 
 
 if __name__ == "__main__":

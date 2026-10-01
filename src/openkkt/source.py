@@ -7,7 +7,7 @@ import sqlite3
 import time
 
 from .crypto import decrypt_snapshot
-from .windows import recover_keys
+from .windows import process_identity, recover_keys
 
 
 @contextmanager
@@ -60,25 +60,44 @@ class LiveSource:
         self.profile = profile.resolve()
         self.pids = pids
         self._keys = {}  # Process-local only; never serialized.
+        self._process_identities = None
+
+    def _verify_processes(self):
+        try:
+            identities = {pid: process_identity(pid) for pid in self.pids}
+            if not identities:
+                raise ValueError("Select at least one KakaoTalk process")
+            if self._process_identities is None:
+                self._process_identities = identities
+            elif identities != self._process_identities:
+                raise RuntimeError("Selected KakaoTalk process changed; reconfigure the collector")
+        except (OSError, RuntimeError, ValueError):
+            self._keys.clear()
+            raise
 
     def _read(self, path: Path) -> tuple[bytes, dict]:
+        self._verify_processes()
         data, wal = stable_pair(path)
         cache_id = (str(path), data[:16])
         keys = self._keys.get(cache_id)
         if keys:
             try:
-                return decrypt_snapshot(data, wal, *keys)
+                result = decrypt_snapshot(data, wal, *keys)
             except ValueError:
                 self._keys.pop(cache_id, None)
+            else:
+                self._verify_processes()
+                return result
         for pid in self.pids:
             try:
                 keys = recover_keys(pid, data[:4096])
                 plain, report = decrypt_snapshot(data, wal, *keys)
-                self._keys[cache_id] = keys
-                report["source_sha256"] = hashlib.sha256(data + wal).hexdigest()
-                return plain, report
             except (OSError, RuntimeError, ValueError):
                 continue
+            self._verify_processes()
+            self._keys[cache_id] = keys
+            report["source_sha256"] = hashlib.sha256(data + wal).hexdigest()
+            return plain, report
         raise RuntimeError("Target DB unavailable or unsupported; verify loaded chat and PID")
 
     def categories(self) -> list[dict]:
