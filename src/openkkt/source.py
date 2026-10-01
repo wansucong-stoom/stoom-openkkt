@@ -1,5 +1,5 @@
 """Explicit-profile local source. No automatic account or chat enumeration."""
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import hashlib
 from pathlib import Path
 import re
@@ -8,6 +8,7 @@ import time
 
 from .crypto import decrypt_snapshot
 from .windows import process_identity, recover_keys
+from .snapshot import EncryptedSnapshot, encrypted_connection
 
 
 @contextmanager
@@ -110,6 +111,109 @@ class LiveSource:
         plain, report = self._read(self.profile / "chat_data" / f"chatLogs_{chat_id}.edb")
         return read_messages(plain), report
 
+    @contextmanager
+    def _encrypted_connection(self, path: Path):
+        self._verify_processes()
+        data, wal = stable_pair(path)
+        snapshot = EncryptedSnapshot(data, wal)
+        cache_id = (str(path), data[:16])
+        try:
+            keys = self._keys.get(cache_id)
+            if keys:
+                try:
+                    snapshot.unlock(keys)
+                except ValueError:
+                    self._keys.pop(cache_id, None)
+                    keys = None
+            if not keys:
+                for pid in self.pids:
+                    try:
+                        keys = recover_keys(pid, snapshot.encrypted_page(1))
+                        snapshot.unlock(keys)
+                    except (OSError, RuntimeError, ValueError):
+                        keys = None
+                        continue
+                    self._keys[cache_id] = keys
+                    break
+                if not keys:
+                    raise RuntimeError("Target DB unavailable or unsupported")
+            self._verify_processes()
+            with encrypted_connection(snapshot) as con:
+                yield con, snapshot
+            self._verify_processes()
+        finally:
+            snapshot.close()
+
+    def room_names(self, chat_ids: set[str]) -> dict[str, str]:
+        """Fetch only selected room titles; never select previews or member data."""
+        if not chat_ids:
+            return {}
+        validate_chat_ids(chat_ids)
+        path = self.profile / "chat_data" / "chatListInfo.edb"
+        if not path.is_file():
+            return {}
+        with self._encrypted_connection(path) as (con, _):
+            columns = {r[1] for r in con.execute("PRAGMA table_info(chatRoomList)")}
+            if not {"chatId", "chatRoomTitle"} <= columns:
+                raise ValueError("Unsupported room title schema")
+            names = {}
+            for chat_id in sorted(chat_ids):
+                rows = list(con.execute(
+                    "SELECT chatRoomTitle FROM chatRoomList WHERE chatId=? OR chatId=? LIMIT 2",
+                    (int(chat_id), chat_id)))
+                if len(rows) > 1:
+                    raise ValueError("Ambiguous room title")
+                if rows and isinstance(rows[0][0], str) and rows[0][0].strip():
+                    names[chat_id] = rows[0][0]
+            return names
+
+    def recent_messages(self, chat_ids: set[str], limit: int, *, require_chat_names=False) -> dict:
+        """Choose global top-N IDs/times, then read at most N body rows, without caching."""
+        validate_recent_limit(limit)
+        validate_chat_ids(chat_ids)
+        names = self.room_names(chat_ids)
+        if require_chat_names and chat_ids - names.keys():
+            raise RuntimeError("Requested room names unavailable; body access stopped")
+        with ExitStack() as stack:
+            connections, snapshots, candidates = {}, {}, []
+            total_bytes = 0
+            for chat_id in sorted(chat_ids):
+                path = self.profile / "chat_data" / f"chatLogs_{chat_id}.edb"
+                con, snapshot = stack.enter_context(self._encrypted_connection(path))
+                total_bytes += snapshot.encrypted_bytes
+                if total_bytes > 512 * 1024 * 1024:
+                    raise ValueError("Combined recent snapshots exceed 512 MiB")
+                connections[chat_id], snapshots[chat_id] = con, snapshot
+                validate_message_schema(con)
+                # No author or message column is selected during global ranking.
+                for row_id, identity, stamp in con.execute(
+                        "SELECT _rowid_,logId,sendAt FROM chatLogs WHERE deleted=0 AND type=1 "
+                        "ORDER BY sendAt DESC,logId DESC LIMIT ?", (limit,)):
+                    candidates.append((int(stamp or 0), int(identity), chat_id, row_id))
+            candidates.sort(key=lambda row: (-row[0], row[2], -row[1]))
+            messages = []
+            for stamp, identity, chat_id, row_id in candidates[:limit]:
+                row = next(iter(connections[chat_id].execute(
+                    "SELECT logId,authorId,sendAt,message,type,deleted FROM chatLogs "
+                    "WHERE _rowid_=? AND deleted=0 AND type=1", (row_id,))), None)
+                if row is None:
+                    raise ValueError("Ranked message missing from immutable snapshot")
+                message = decode_message(row)
+                message.update(chat_id=chat_id, chat_name=names.get(chat_id),
+                               chat_name_status="available" if chat_id in names else "unavailable")
+                messages.append(message)
+            return {"messages": messages,
+                    "content_semantics": "latest live text messages across requested rooms",
+                    "read_scope": {"mode": "bounded_recent", "body_rows_read": len(messages),
+                                   "body_limit": limit, "body_rows_saved": 0,
+                                   "ranking_columns": ["logId", "sendAt"],
+                                   "ranking_rows": len(candidates), "rooms_considered": len(chat_ids),
+                                   "decryption": "on_demand_pages",
+                                   "page_granularity": "pages may contain adjacent message bodies"},
+                    "room_reports": {room: {**snapshot.report,
+                                             "verified_pages": len(snapshot.verified)}
+                                     for room, snapshot in snapshots.items()}}
+
     def close(self):
         self._keys.clear()
 
@@ -131,15 +235,34 @@ def read_categories(plain: bytes) -> list[dict]:
 
 def read_messages(plain: bytes) -> list[dict]:
     with snapshot_connection(plain) as con:
-        columns = {r[1] for r in con.execute("PRAGMA table_info(chatLogs)")}
-        if not {"logId", "authorId", "sendAt", "message", "type", "deleted"} <= columns:
-            raise ValueError("Unsupported chatLogs schema")
+        validate_message_schema(con)
         result = []
-        for identity, author, stamp, text, kind, deleted in con.execute(
+        for row in con.execute(
                 "SELECT logId,authorId,sendAt,message,type,deleted FROM chatLogs"):
-            if text is not None and not isinstance(text, str):
-                raise ValueError("Message is not decoded text")
-            result.append({"id": str(identity), "author_id": str(author),
-                           "sent_at": int(stamp or 0), "text": "" if deleted else (text or ""),
-                           "type": kind, "deleted": bool(deleted)})
+            result.append(decode_message(row))
         return result
+
+
+def validate_chat_ids(chat_ids):
+    if any(not isinstance(cid, str) or not re.fullmatch(r"[0-9]+", cid) for cid in chat_ids):
+        raise ValueError("Invalid chat ID")
+
+
+def validate_recent_limit(limit):
+    if type(limit) is not int or not 1 <= limit <= 200:
+        raise ValueError("Invalid recent body limit (1..200)")
+
+
+def validate_message_schema(con):
+    columns = {r[1] for r in con.execute("PRAGMA table_info(chatLogs)")}
+    if not {"logId", "authorId", "sendAt", "message", "type", "deleted"} <= columns:
+        raise ValueError("Unsupported chatLogs schema")
+
+
+def decode_message(row):
+    identity, author, stamp, text, kind, deleted = row
+    if text is not None and not isinstance(text, str):
+        raise ValueError("Message is not decoded text")
+    return {"id": str(identity), "author_id": str(author),
+            "sent_at": int(stamp or 0), "text": "" if deleted else (text or ""),
+            "type": kind, "deleted": bool(deleted)}

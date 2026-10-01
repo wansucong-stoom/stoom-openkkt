@@ -81,12 +81,14 @@ def main(argv=None):
     server = sub.add_parser("serve")
     server.add_argument("--allow-scope-changes", action="store_true")
     server.add_argument("--live", action="store_true", help="Refresh source on each read; no separate watcher needed")
-    read = sub.add_parser("read", help="Refresh selected rooms, then query on demand")
+    read = sub.add_parser("read", help="On-demand query; recent limits total body reads and does not cache")
     read.add_argument("--after", type=int, default=0)
     read.add_argument("--limit", type=int, default=50)
     read.add_argument("--text")
     read.add_argument("--chat-id")
     read.add_argument("--recent", action="store_true")
+    read.add_argument("--require-chat-names", action="store_true",
+                      help="Recent only: stop before body reads if any requested room title is unavailable")
     folders = sub.add_parser("folders", help="Refresh and list custom categories on demand")
     scope = sub.add_parser("scope", help="Refresh metadata and select explicit custom categories")
     scope.add_argument("names", nargs="*")
@@ -111,7 +113,7 @@ def main(argv=None):
                 output(reader.select(args.names)); return 0
             if args.command == "read":
                 output(reader.query(after=args.after, limit=args.limit, text=args.text, chat_id=args.chat_id,
-                                    recent=args.recent)); return 0
+                                    recent=args.recent, require_chat_names=args.require_chat_names)); return 0
             from .mcp_server import serve
             serve(reader.store, args.allow_scope_changes, False, reader); return 0
         if args.command == "init":

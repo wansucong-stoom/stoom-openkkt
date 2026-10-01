@@ -165,7 +165,7 @@
           <div class="check-row"><span>이 PC의 MCP 등록</span><span id="mcp-state" class="tag">확인 중</span></div>
           <div class="check-row"><span>이 PC의 읽기 skill</span><span id="skill-state" class="tag">확인 중</span></div>
           <div class="connect-note"><div class="connection-step"><span class="mini-step">1</span><p>dot 프로필에서 <strong>Computers → Your computer → Allow access</strong>를 선택합니다. 이미 허용했다면 다시 설정하지 않아도 됩니다.</p></div><div class="connection-step"><span class="mini-step">2</span><p>PC를 온라인으로 두고 앱을 열어 둔 상태에서 아래 요청으로 실제 호출을 확인하세요.</p></div></div>
-          <div class="smoke"><p id="smoke-prompt">연결된 내 PC에서 OpenKKT 읽기 도구로 카카오톡 사용자 지정 범주의 이름·채팅방 수·선택 여부를 확인해줘. 대화 본문은 읽지 말고 실제 실행 성공 여부도 알려줘.</p><button id="copy-prompt" type="button">확인 요청 복사</button><p id="copy-state" class="help" role="status" aria-live="polite"></p></div>
+          <div class="smoke"><p id="smoke-prompt">연결된 내 PC에서 설치된 OpenKKT로 카카오톡 사용자 지정 범주의 이름·채팅방 수·OpenKKT 선택 여부만 확인해줘. 이 조회에 필요한 본인 카카오톡의 DB 키 읽기 전용 검증과 chatfolder.edb·WAL 복호화를 허용해. 대화 본문 DB·미리보기·보낸사람·로그인 토큰은 조회하지 말고, 키는 출력하거나 저장하지 마. 범주 선택 변경·채팅방 열기·읽음 처리·발송도 하지 마. 현재 작업에 MCP 도구가 없으면 설치된 CLI의 folders를 사용해. 실행한 도구와 실제 성공 여부, 확인시각을 알려줘.</p><button id="copy-prompt" type="button">확인 요청 복사</button><p id="copy-state" class="help" role="status" aria-live="polite"></p></div>
           <p class="sidebar-note" style="margin-top:12px">MCP·skill 등록은 이 PC 기준입니다. 비서에서 실제 호출이 성공하는지 별도로 확인해야 하며, 새 메시지의 자동 감지·응답은 별도 연결이 필요합니다.</p>
         </section>
       </aside>
@@ -270,7 +270,7 @@
       text($('preview-state'),visible.length ? '최근 메시지 ' + visible.length + '건 · 이번 요청에서 읽은 결과' : '선택한 범주에서 조회할 메시지가 없습니다.');
       visible.forEach(message => {
         const article = document.createElement('article'); article.className = 'message'; const meta = document.createElement('div'); meta.className = 'message-meta';
-        const room = document.createElement('span'); room.className = 'message-room'; text(room,'채팅방 ' + String(message.chat_id ?? ''));
+        const room = document.createElement('span'); room.className = 'message-room'; text(room,message.chat_name || ('이름 확인 불가 · 방 ID ' + String(message.chat_id ?? '')));
         const time = document.createElement('span'); text(time,readableTime(message.sent_at)); meta.append(room,time);
         const body = document.createElement('p'); body.className = 'message-text'; text(body,message.deleted ? '삭제된 메시지' : (message.text ?? ''));
         article.append(meta,body); $('messages').append(article);
